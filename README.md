@@ -102,7 +102,5 @@ Ante cualquier sospecha de ACV, se recomienda acudir inmediatamente a un centro 
 ---
 
 ## 👨‍💻 Autor
-Nicolas Emanuel Oly Sánchez.
-Estudiante de Ingeniería de Software  
-Universidad Católica Boliviana San Pablo  
+Nicolas Emanuel Oly Sánchez
 
