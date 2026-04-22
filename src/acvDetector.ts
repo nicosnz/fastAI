@@ -3,6 +3,7 @@ declare const tmPose: any;
 declare const speechCommands: any;
 
 const BASE = "/models";
+const BASE_URL = `${window.location.origin}/models`;
 
 interface Prediction { className: string; probability: number }
 export interface PhaseResult { score: number; label: string; raw: Prediction[] }
@@ -61,40 +62,132 @@ export async function runArmPhase(
   }
 }
 
-// ── FASE 3: AUDIO ────────────────────────────────────────────
+
 export async function runAudioPhase(): Promise<PhaseResult> {
-  return new Promise(async (resolve, reject) => {
-    let model: any;
+  return new Promise(async (resolve) => {
+    let recognizer: any;
+    let settled = false;
+
+    const finish = (result: PhaseResult) => {
+      if (settled) return;
+      settled = true;
+      try { recognizer?.stopListening?.(); } catch (_) {}
+      resolve(result);
+    };
+
     try {
-      model = await speechCommands.create(
-        `${BASE}/audio/model.json`,
-        `${BASE}/audio/metadata.json`
+      // Orden correcto: fftType, vocabulary, checkpointURL, metadataURL
+      recognizer = speechCommands.create(
+        "BROWSER_FFT",
+        undefined,
+        `${BASE_URL}/audio/model.json`,
+        `${BASE_URL}/audio/metadata.json`
       );
-      await model.listen(
-        (preds: Prediction[]) => {
-          model.stopListening();
-          disposeModel(model);
+
+      await recognizer.ensureModelLoaded();
+
+      const labels: string[] = recognizer.wordLabels();
+
+      recognizer.listen(
+        (result: { scores:Float32Array }) => {
+          const scoresArray = Array.from(result.scores);
+          const preds: Prediction[] = scoresArray.map((prob, i) => ({
+            className: labels[i],
+            probability: prob
+          }));
+          console.log("Audio preds:", preds)
           const abnormal = preds.find(p =>
             p.className.toLowerCase().includes("habla arrastrada")
           );
-          const score = abnormal?.probability ?? 0;
-          resolve({ score, label: abnormal?.className ?? "Normal", raw: preds });
+
+          finish({
+            score: abnormal?.probability ?? 0,
+            label: abnormal?.className ?? "Normal",
+            raw: preds
+          });
         },
-        { includeSpectrogram: false, probabilityThreshold: 0.75, overlapFactor: 0.5 }
+        {
+          includeSpectrogram: true,
+          probabilityThreshold: 0.75,
+          invokeCallbackOnNoiseAndUnknown: true,
+          overlapFactor: 0.50
+        }
       );
-      // Timeout 5 segundos de escucha máximo
-      setTimeout(() => {
-        model.stopListening();
-        disposeModel(model);
-        resolve({ score: 0, label: "sin audio", raw: [] });
-      }, 5000);
+
+      // Timeout 5 segundos
+      setTimeout(() => finish({ score: 0, label: "ruido de fondo", raw: [] }), 5000);
+
     } catch (err) {
-      disposeModel(model);
-      reject(err);
+      resolve({ score: 0, label: "error", raw: [] });
+      console.error("Audio error:", err);
     }
   });
 }
+export async function runAudioPhaseFromFile(blob: Blob): Promise<PhaseResult> {
+  // Decodifica el audio del archivo
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioCtx    = new AudioContext();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
+  // Crea el recognizer
+  const recognizer = speechCommands.create(
+    "BROWSER_FFT",
+    undefined,
+    `${BASE_URL}/audio/model.json`,
+    `${BASE_URL}/audio/metadata.json`
+  );
+  await recognizer.ensureModelLoaded();
+  const labels: string[] = recognizer.wordLabels();
+
+  // Reproduce el audio a través del contexto de audio
+  const source = audioCtx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioCtx.destination);
+
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const finish = (result: PhaseResult) => {
+      if (settled) return;
+      settled = true;
+      try { recognizer?.stopListening?.(); } catch (_) {}
+      try { audioCtx.close(); } catch (_) {}
+      resolve(result);
+    };
+
+    recognizer.listen(
+      (result: { scores: Float32Array }) => {
+        const scoresArray = Array.from(result.scores);
+        const preds: Prediction[] = scoresArray.map((prob, i) => ({
+          className: labels[i],
+          probability: prob
+        }));
+
+        const abnormal = preds.find(p =>
+          p.className.toLowerCase().includes("habla arrastrada")
+        );
+        finish({
+          score: abnormal?.probability ?? 0,
+          label: abnormal?.className ?? "Normal",
+          raw: preds
+        });
+      },
+      {
+        includeSpectrogram: true,
+        probabilityThreshold: 0.75,
+        invokeCallbackOnNoiseAndUnknown: true,
+        overlapFactor: 0.50
+      }
+    );
+
+    // Inicia la reproducción del archivo
+    source.start();
+
+    // Timeout: duración del audio + 1 segundo de margen
+    const timeoutMs = (audioBuffer.duration * 1000) + 1000;
+    setTimeout(() => finish({ score: 0, label: "sin detección", raw: [] }), timeoutMs);
+  });
+}
 // ── COMBINACIÓN FINAL ────────────────────────────────────────
 export interface ACVResult {
   faceScore: number;

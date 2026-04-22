@@ -1,6 +1,5 @@
-import { runFacePhase, runArmPhase, runAudioPhase, combineScores } from "./acvDetector";
+import { runFacePhase, runArmPhase, runAudioPhase,runAudioPhaseFromFile, combineScores } from "./acvDetector";
 import type { ACVResult, PhaseResult } from "./acvDetector";
-
 // ── DOM ──────────────────────────────────────────────────────
 const app = document.getElementById("app")!;
 app.innerHTML = `
@@ -10,7 +9,6 @@ app.innerHTML = `
       Elige cómo quieres capturar los datos para el análisis.
     </p>
 
-    <!-- Selector de fuente -->
     <div id="source-selector" style="display:flex;gap:0.5rem;margin-bottom:1rem">
       <button id="btnCamera"
         style="flex:1;padding:0.6rem;border-radius:8px;border:2px solid #1D9E75;
@@ -32,22 +30,33 @@ app.innerHTML = `
 
     <!-- Archivo -->
     <div id="file-area" style="display:none">
+
+      <!-- Drop zone genérico — su accept cambia según la fase -->
       <div id="drop-zone"
         style="border:2px dashed #ccc;border-radius:8px;padding:2rem;
                text-align:center;cursor:pointer;color:#666;font-size:0.9rem;
                transition:border-color 0.2s">
-        <div style="font-size:2rem;margin-bottom:0.5rem">📂</div>
-        <div>Arrastra un video o imagen aquí</div>
-        <div style="font-size:0.8rem;margin-top:0.25rem;color:#aaa">
-          video o imagen para cara/brazo — solo video para audio
+        <div style="font-size:2rem;margin-bottom:0.5rem" id="dropIcon">📂</div>
+        <div id="dropLabel">Arrastra un video o imagen aquí</div>
+        <div id="dropSub" style="font-size:0.8rem;margin-top:0.25rem;color:#aaa">
+          video o imagen para cara/brazo — archivo de audio para fase 3
         </div>
         <input id="fileInput" type="file" accept="video/*,image/*" style="display:none">
       </div>
+
       <video id="videoFile" controls
         style="width:100%;border-radius:8px;background:#000;display:none;margin-top:0.5rem">
       </video>
       <img id="imgPreview"
         style="width:100%;border-radius:8px;display:none;margin-top:0.5rem">
+
+      <!-- Preview audio cargado -->
+      <div id="audioPreview" style="display:none;margin-top:0.75rem;
+           border:1px solid #eee;border-radius:8px;padding:0.75rem">
+        <div style="font-size:0.85rem;color:#444;margin-bottom:0.4rem">🎵 Audio cargado:</div>
+        <audio id="audioPlayer" controls style="width:100%"></audio>
+      </div>
+
     </div>
 
     <div id="status" style="margin-top:1rem;font-size:0.9rem;color:#444;min-height:1.5rem"></div>
@@ -58,24 +67,31 @@ app.innerHTML = `
 `;
 
 // ── REFERENCIAS ───────────────────────────────────────────────
-const btnCamera  = document.getElementById("btnCamera")!  as HTMLButtonElement;
-const btnFile    = document.getElementById("btnFile")!    as HTMLButtonElement;
-const cameraArea = document.getElementById("camera-area")!;
-const fileArea   = document.getElementById("file-area")!;
-const dropZone   = document.getElementById("drop-zone")!;
-const fileInput  = document.getElementById("fileInput")!  as HTMLInputElement;
-const video      = document.getElementById("video")!      as HTMLVideoElement;
-const videoFile  = document.getElementById("videoFile")!  as HTMLVideoElement;
-const imgPreview = document.getElementById("imgPreview")! as HTMLImageElement;
-const statusEl   = document.getElementById("status")!;
-const btnArea    = document.getElementById("btn-area")!;
-const phasesEl   = document.getElementById("phases")!;
-const resultEl   = document.getElementById("result")!;
+const btnCamera    = document.getElementById("btnCamera")!    as HTMLButtonElement;
+const btnFile      = document.getElementById("btnFile")!      as HTMLButtonElement;
+const cameraArea   = document.getElementById("camera-area")!;
+const fileArea     = document.getElementById("file-area")!;
+const dropZone     = document.getElementById("drop-zone")!;
+const dropIcon     = document.getElementById("dropIcon")!;
+const dropLabel    = document.getElementById("dropLabel")!;
+const dropSub      = document.getElementById("dropSub")!;
+const fileInput    = document.getElementById("fileInput")!    as HTMLInputElement;
+const video        = document.getElementById("video")!        as HTMLVideoElement;
+const videoFile    = document.getElementById("videoFile")!    as HTMLVideoElement;
+const imgPreview   = document.getElementById("imgPreview")!   as HTMLImageElement;
+const audioPreview = document.getElementById("audioPreview")!;
+const audioPlayer  = document.getElementById("audioPlayer")!  as HTMLAudioElement;
+const statusEl     = document.getElementById("status")!;
+const btnArea      = document.getElementById("btn-area")!;
+const phasesEl     = document.getElementById("phases")!;
+const resultEl     = document.getElementById("result")!;
 
 // ── ESTADO ────────────────────────────────────────────────────
-let activeVideo: HTMLVideoElement = video;
-let fileType: "video" | "image"   = "video";
-let sourceMode: "camera" | "file" = "camera";
+let activeVideo: HTMLVideoElement  = video;
+let fileType: "video" | "image"    = "video";
+let sourceMode: "camera" | "file"  = "camera";
+let currentPhase: "face" | "arm" | "audio" = "face";
+let audioBlob: Blob | null         = null;
 let faceResult:  PhaseResult | null = null;
 let armResult:   PhaseResult | null = null;
 let audioResult: PhaseResult | null = null;
@@ -124,21 +140,59 @@ function addPhaseRow(
   phasesEl.appendChild(row);
 }
 
+// ── CONFIGURAR DROP ZONE SEGÚN FASE ──────────────────────────
+function configureDropZone(phase: "face" | "arm" | "audio") {
+  currentPhase = phase;
+
+  // Oculta previews anteriores
+  imgPreview.style.display   = "none";
+  imgPreview.src             = "";
+  videoFile.style.display    = "none";
+  videoFile.src              = "";
+  audioPreview.style.display = "none";
+  audioPlayer.src            = "";
+  dropZone.style.display     = "block";
+
+  if (phase === "audio") {
+    fileInput.accept = "audio/*";
+    dropIcon.textContent  = "🎙";
+    dropLabel.textContent = "Arrastra un archivo de audio aquí";
+    dropSub.textContent   = "formatos: mp3, wav, ogg, m4a";
+  } else {
+    fileInput.accept = "video/*,image/*";
+    dropIcon.textContent  = "📂";
+    dropLabel.textContent = phase === "face"
+      ? "Arrastra una imagen o video de la CARA"
+      : "Arrastra una imagen o video del BRAZO";
+    dropSub.textContent = "jpg, png, mp4, webm...";
+  }
+
+  fileInput.value = "";
+}
+
 // ── SELECTOR DE FUENTE ────────────────────────────────────────
 function selectSource(mode: "camera" | "file") {
   sourceMode = mode;
 
   if (mode === "camera") {
-    btnCamera.style.cssText += ";background:#1D9E75;color:#fff;border-color:#1D9E75";
-    btnFile.style.cssText   += ";background:#fff;color:#444;border-color:#ccc";
-    cameraArea.style.display = "block";
-    fileArea.style.display   = "none";
+    btnCamera.style.background  = "#1D9E75";
+    btnCamera.style.color       = "#fff";
+    btnCamera.style.borderColor = "#1D9E75";
+    btnFile.style.background    = "#fff";
+    btnFile.style.color         = "#444";
+    btnFile.style.borderColor   = "#ccc";
+    cameraArea.style.display    = "block";
+    fileArea.style.display      = "none";
     activeVideo = video;
   } else {
-    btnFile.style.cssText   += ";background:#1D9E75;color:#fff;border-color:#1D9E75";
-    btnCamera.style.cssText += ";background:#fff;color:#444;border-color:#ccc";
-    fileArea.style.display   = "block";
-    cameraArea.style.display = "none";
+    btnFile.style.background    = "#1D9E75";
+    btnFile.style.color         = "#fff";
+    btnFile.style.borderColor   = "#1D9E75";
+    btnCamera.style.background  = "#fff";
+    btnCamera.style.color       = "#444";
+    btnCamera.style.borderColor = "#ccc";
+    fileArea.style.display      = "block";
+    cameraArea.style.display    = "none";
     activeVideo = videoFile;
   }
 }
@@ -156,7 +210,8 @@ btnCamera.addEventListener("click", async () => {
 btnFile.addEventListener("click", () => {
   selectSource("file");
   btnArea.innerHTML = "";
-  setStatus("Selecciona o arrastra un video o imagen para comenzar.");
+  configureDropZone("face");
+  setStatus("Carga una imagen o video de la CARA para comenzar.");
 });
 
 // ── DRAG & DROP + FILE INPUT ──────────────────────────────────
@@ -165,18 +220,18 @@ dropZone.addEventListener("click", () => fileInput.click());
 dropZone.addEventListener("dragover", (e) => {
   e.preventDefault();
   dropZone.style.borderColor = "#1D9E75";
-  dropZone.style.color = "#1D9E75";
+  dropZone.style.color       = "#1D9E75";
 });
 
 dropZone.addEventListener("dragleave", () => {
   dropZone.style.borderColor = "#ccc";
-  dropZone.style.color = "#666";
+  dropZone.style.color       = "#666";
 });
 
 dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
   dropZone.style.borderColor = "#ccc";
-  dropZone.style.color = "#666";
+  dropZone.style.color       = "#666";
   const file = e.dataTransfer?.files[0];
   if (file) loadFile(file);
 });
@@ -189,7 +244,22 @@ fileInput.addEventListener("change", () => {
 function loadFile(file: File) {
   const isVideo = file.type.startsWith("video/");
   const isImage = file.type.startsWith("image/");
+  const isAudio = file.type.startsWith("audio/");
 
+  // Fase audio — solo acepta audio
+  if (currentPhase === "audio") {
+    if (!isAudio) { setStatus("❌ Por favor carga un archivo de audio."); return; }
+    audioBlob = file;
+    const url = URL.createObjectURL(file);
+    audioPlayer.src            = url;
+    audioPreview.style.display = "block";
+    dropZone.style.display     = "none";
+    setStatus(`✔ Audio cargado: ${file.name}`);
+    setBtn("Analizar audio →", stepAudio);
+    return;
+  }
+
+  // Fases cara / brazo — acepta video o imagen
   if (!isVideo && !isImage) {
     setStatus("❌ Solo se aceptan videos o imágenes.");
     return;
@@ -201,27 +271,30 @@ function loadFile(file: File) {
   if (isVideo) {
     fileType = "video";
     imgPreview.style.display = "none";
-    imgPreview.src = "";
-    videoFile.src = url;
-    videoFile.style.display = "block";
-    activeVideo = videoFile;
+    videoFile.src            = url;
+    videoFile.style.display  = "block";
+    activeVideo              = videoFile;
     videoFile.onloadedmetadata = () => {
       setStatus(`✔ Video cargado: ${file.name}`);
-      setBtn("Iniciar análisis — Cara", stepFace);
+      const label = currentPhase === "face" ? "Iniciar análisis — Cara" : "Analizar brazo →";
+      const fn    = currentPhase === "face" ? stepFace : stepArm;
+      setBtn(label, fn);
     };
   } else {
     fileType = "image";
-    videoFile.style.display = "none";
-    videoFile.src = "";
-    imgPreview.src = url;
+    videoFile.style.display  = "none";
+    imgPreview.src           = url;
     imgPreview.style.display = "block";
     imgPreview.onload = () => {
       setStatus(`✔ Imagen cargada: ${file.name}`);
-      setBtn("Iniciar análisis — Cara", stepFace);
+      const label = currentPhase === "face" ? "Iniciar análisis — Cara" : "Analizar brazo →";
+      const fn    = currentPhase === "face" ? stepFace : stepArm;
+      setBtn(label, fn);
     };
   }
 }
 
+// ── CÁMARA ────────────────────────────────────────────────────
 async function startCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "user", width: 480, height: 360 },
@@ -230,7 +303,6 @@ async function startCamera() {
   video.srcObject = stream;
   await new Promise(r => (video.onloadedmetadata = r));
 }
-
 
 // ── PASO 1: CARA ──────────────────────────────────────────────
 async function stepFace() {
@@ -250,6 +322,23 @@ async function stepFace() {
     addPhaseRow("Fase 1 — Cara", faceResult.score, faceResult.raw);
     setStatus("✔ Cara analizada");
 
+    // Si es archivo: limpia y pide imagen/video del brazo
+    if (sourceMode === "file") {
+      configureDropZone("arm");
+      setStatus("✔ Cara analizada. Ahora carga una imagen o video del BRAZO.");
+      if (faceResult.score < 0.25) {
+        showResult({
+          faceScore: faceResult.score, armScore: 0, audioScore: 0,
+          totalScore: faceResult.score * 0.35,
+          risk: "bajo",
+          message: "Sin asimetría facial. Puedes continuar como precaución."
+        });
+      }
+      // El botón aparece automáticamente cuando carguen el archivo del brazo
+      return;
+    }
+
+    // Cámara: botón directo
     if (faceResult.score < 0.25) {
       showResult({
         faceScore: faceResult.score, armScore: 0, audioScore: 0,
@@ -285,6 +374,23 @@ async function stepArm() {
     addPhaseRow("Fase 2 — Brazo", armResult.score, armResult.raw);
     setStatus("✔ Brazo analizado");
 
+    // Si es archivo: limpia y pide audio
+    if (sourceMode === "file") {
+      configureDropZone("audio");
+      setStatus("✔ Brazo analizado. Ahora carga un archivo de AUDIO.");
+      if (armResult.score < 0.25) {
+        showResult({
+          faceScore: faceResult?.score ?? 0,
+          armScore: armResult.score, audioScore: 0,
+          totalScore: (faceResult?.score ?? 0) * 0.35 + armResult.score * 0.35,
+          risk: "bajo",
+          message: "Sin debilidad en brazo. Puedes continuar como precaución."
+        });
+      }
+      return;
+    }
+
+    // Cámara: botón directo
     if (armResult.score < 0.25) {
       showResult({
         faceScore: faceResult?.score ?? 0,
@@ -308,33 +414,30 @@ async function stepAudio() {
   resultEl.style.display = "none";
   clearBtn();
 
-  // Imagen: audio no disponible, score 0
-  if (sourceMode === "file" && fileType === "image") {
-    setStatus("ℹ️ Análisis de audio no disponible para imágenes.");
-    audioResult = { score: 0, label: "no disponible", raw: [] };
-    addPhaseRow("Fase 3 — Audio", 0, [{ className: "No disponible (imagen)", probability: 0 }]);
-    const final = combineScores(
-      faceResult  ?? { score: 0, label: "", raw: [] },
-      armResult   ?? { score: 0, label: "", raw: [] },
-      audioResult
-    );
-    showResult(final);
-    setBtn("🔄 Repetir análisis completo", restart, "#444");
-    return;
-  }
-
-  if (sourceMode === "file") {
-    setStatus("🎙 Analizando audio del video...");
-    videoFile.currentTime = 0;
-    videoFile.play();
+  if (sourceMode === "file" && audioBlob) {
+    // Convierte el audioBlob en un stream que speechCommands pueda escuchar
+    // La forma más compatible: reproduce el audio por el altavoz y
+    // speechCommands escucha desde el micrófono (workaround estándar).
+    // Alternativa directa: decodificar con Web Audio API y pasarlo al modelo.
+    audioResult = await runAudioPhaseFromFile(audioBlob);
+    setStatus("🎙 Analizando audio del archivo...");
+    if (!audioBlob) {
+      setStatus("❌ No hay archivo de audio cargado.");
+      setBtn("Cargar audio", () => configureDropZone("audio"), "#E8A020");
+      return;
+    }
+    // Reproduce el audio (el modelo escucha en paralelo desde el micrófono)
+    audioPlayer.currentTime = 0;
+    audioPlayer.play();
   } else {
     setStatus("🎙 Escuchando micrófono... habla una frase (5 seg)");
+    audioResult = await runAudioPhase(); 
+    audioPlayer.pause();
+
   }
 
   try {
-    audioResult = await runAudioPhase();
     addPhaseRow("Fase 3 — Audio", audioResult.score, audioResult.raw);
-    if (sourceMode === "file") videoFile.pause();
     setStatus("✔ Audio analizado");
 
     const final = combineScores(
@@ -386,22 +489,24 @@ function showResult(r: ACVResult) {
 // ── REINICIO ──────────────────────────────────────────────────
 function restart() {
   faceResult = armResult = audioResult = null;
-  fileType = "video";
-  phasesEl.innerHTML = "";
+  audioBlob  = null;
+  fileType   = "video";
+  phasesEl.innerHTML     = "";
   resultEl.style.display = "none";
-  resultEl.innerHTML = "";
+  resultEl.innerHTML     = "";
   setStatus("");
   btnArea.innerHTML = "";
 
   if (sourceMode === "file") {
     videoFile.pause();
-    videoFile.src = "";
+    videoFile.src          = "";
     videoFile.style.display = "none";
-    imgPreview.src = "";
+    imgPreview.src          = "";
     imgPreview.style.display = "none";
-    dropZone.style.display = "block";
-    fileInput.value = "";
-    setStatus("Selecciona o arrastra un video o imagen para comenzar.");
+    audioPlayer.src         = "";
+    audioPreview.style.display = "none";
+    configureDropZone("face");
+    setStatus("Carga una imagen o video de la CARA para comenzar.");
   } else {
     setBtn("Iniciar análisis — Cara", stepFace);
   }
