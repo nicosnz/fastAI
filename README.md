@@ -44,7 +44,11 @@ http://localhost:5173
 ```
 
 ---
-
+## 📁 Documentación / Informe
+El informe del proyecto esta en la carpeta: 
+```bash
+docs/FastDocs.docx
+```
 ## 🧪 Uso del sistema
 
 El sistema permite dos modos de operación:
