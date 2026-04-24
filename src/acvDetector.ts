@@ -10,7 +10,7 @@ export interface PhaseResult { score: number; label: string; raw: Prediction[] }
 
 // Libera un modelo de TF para recuperar RAM
 function disposeModel(model: any) {
-  try { model?.dispose?.(); } catch (_) {}
+  try { model?.dispose?.(); } catch (_) { }
 }
 
 // ── FASE 1: CARA ─────────────────────────────────────────────
@@ -26,11 +26,11 @@ export async function runFacePhase(
     const preds: Prediction[] = await model.predict(video);
     // Busca la clase que indica anomalía facial (ajusta el nombre exacto)
     console.log(preds);
-    
+
     const abnormal = preds.find(p =>
       p.className.toLowerCase().includes("signo acv")
     );
-    
+
     const score = abnormal?.probability ?? 0;
     return { score, label: abnormal?.className ?? "Sano", raw: preds };
   } finally {
@@ -50,8 +50,8 @@ export async function runArmPhase(
     );
     const { posenetOutput } = await model.estimatePose(video);
     const preds: Prediction[] = await model.predict(posenetOutput);
-    
-    
+
+
     const abnormal = preds.find(p =>
       p.className.toLowerCase().includes("debilidad unilateral")
     );
@@ -71,7 +71,7 @@ export async function runAudioPhase(): Promise<PhaseResult> {
     const finish = (result: PhaseResult) => {
       if (settled) return;
       settled = true;
-      try { recognizer?.stopListening?.(); } catch (_) {}
+      try { recognizer?.stopListening?.(); } catch (_) { }
       resolve(result);
     };
 
@@ -88,8 +88,12 @@ export async function runAudioPhase(): Promise<PhaseResult> {
 
       const labels: string[] = recognizer.wordLabels();
 
+      let bestScore = 0;
+      let bestPreds: Prediction[] = [];
+      let abnormalLabel = "Normal";
+
       recognizer.listen(
-        (result: { scores:Float32Array }) => {
+        (result: { scores: Float32Array }) => {
           const scoresArray = Array.from(result.scores);
           const preds: Prediction[] = scoresArray.map((prob, i) => ({
             className: labels[i],
@@ -100,11 +104,12 @@ export async function runAudioPhase(): Promise<PhaseResult> {
             p.className.toLowerCase().includes("habla arrastrada")
           );
 
-          finish({
-            score: abnormal?.probability ?? 0,
-            label: abnormal?.className ?? "Normal",
-            raw: preds
-          });
+          const currentScore = abnormal?.probability ?? 0;
+          if (currentScore >= bestScore || bestPreds.length === 0) {
+            bestScore = currentScore;
+            bestPreds = preds;
+            if (abnormal) abnormalLabel = abnormal.className;
+          }
         },
         {
           includeSpectrogram: true,
@@ -115,7 +120,11 @@ export async function runAudioPhase(): Promise<PhaseResult> {
       );
 
       // Timeout 5 segundos
-      setTimeout(() => finish({ score: 0, label: "ruido de fondo", raw: [] }), 5000);
+      setTimeout(() => finish({
+        score: bestScore,
+        label: bestScore > 0 ? abnormalLabel : "Normal",
+        raw: bestPreds
+      }), 5000);
 
     } catch (err) {
       resolve({ score: 0, label: "error", raw: [] });
@@ -126,7 +135,7 @@ export async function runAudioPhase(): Promise<PhaseResult> {
 export async function runAudioPhaseFromFile(blob: Blob): Promise<PhaseResult> {
   // Decodifica el audio del archivo
   const arrayBuffer = await blob.arrayBuffer();
-  const audioCtx    = new AudioContext();
+  const audioCtx = new AudioContext();
   const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
   // Crea el recognizer
@@ -138,6 +147,9 @@ export async function runAudioPhaseFromFile(blob: Blob): Promise<PhaseResult> {
   );
   await recognizer.ensureModelLoaded();
   const labels: string[] = recognizer.wordLabels();
+  let bestScore = 0;
+  let bestPreds: Prediction[] = [];
+  let abnormalLabel = "Normal";
 
   // Reproduce el audio a través del contexto de audio
   const source = audioCtx.createBufferSource();
@@ -150,8 +162,8 @@ export async function runAudioPhaseFromFile(blob: Blob): Promise<PhaseResult> {
     const finish = (result: PhaseResult) => {
       if (settled) return;
       settled = true;
-      try { recognizer?.stopListening?.(); } catch (_) {}
-      try { audioCtx.close(); } catch (_) {}
+      try { recognizer?.stopListening?.(); } catch (_) { }
+      try { audioCtx.close(); } catch (_) { }
       resolve(result);
     };
 
@@ -166,11 +178,13 @@ export async function runAudioPhaseFromFile(blob: Blob): Promise<PhaseResult> {
         const abnormal = preds.find(p =>
           p.className.toLowerCase().includes("habla arrastrada")
         );
-        finish({
-          score: abnormal?.probability ?? 0,
-          label: abnormal?.className ?? "Normal",
-          raw: preds
-        });
+
+        const currentScore = abnormal?.probability ?? 0;
+        if (currentScore >= bestScore || bestPreds.length === 0) {
+          bestScore = currentScore;
+          bestPreds = preds;
+          if (abnormal) abnormalLabel = abnormal.className;
+        }
       },
       {
         includeSpectrogram: true,
@@ -185,7 +199,11 @@ export async function runAudioPhaseFromFile(blob: Blob): Promise<PhaseResult> {
 
     // Timeout: duración del audio + 1 segundo de margen
     const timeoutMs = (audioBuffer.duration * 1000) + 1000;
-    setTimeout(() => finish({ score: 0, label: "sin detección", raw: [] }), timeoutMs);
+    setTimeout(() => finish({
+      score: bestScore,
+      label: bestScore > 0 ? abnormalLabel : "Normal",
+      raw: bestPreds
+    }), timeoutMs);
   });
 }
 // ── COMBINACIÓN FINAL ────────────────────────────────────────
@@ -205,7 +223,7 @@ export function combineScores(
 ): ACVResult {
   const total =
     face.score * 0.35 +
-    arm.score  * 0.35 +
+    arm.score * 0.35 +
     audio.score * 0.30;
 
   let risk: ACVResult["risk"];
