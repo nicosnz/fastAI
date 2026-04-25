@@ -356,26 +356,72 @@ async function stepFace() {
   }
 }
 
-// ── PASO 2: BRAZO ─────────────────────────────────────────────
+// // ── PASO 2: BRAZO ─────────────────────────────────────────────
+// async function stepArm() {
+//   resultEl.style.display = "none";
+//   clearBtn();
+//   setStatus("💪 Analizando brazo...");
+
+//   if (sourceMode === "camera") await delay(1500);
+//   else if (fileType === "video") videoFile.pause();
+
+//   try {
+//     const source = sourceMode === "file" && fileType === "image"
+//       ? imgPreview
+//       : activeVideo;
+
+//     armResult = await runArmPhase(source as any);
+//     addPhaseRow("Fase 2 — Brazo", armResult.score, armResult.raw);
+//     setStatus("✔ Brazo analizado");
+
+//     // Si es archivo: limpia y pide audio
+//     if (sourceMode === "file") {
+//       configureDropZone("audio");
+//       setStatus("✔ Brazo analizado. Ahora carga un archivo de AUDIO.");
+//       if (armResult.score < 0.25) {
+//         showResult({
+//           faceScore: faceResult?.score ?? 0,
+//           armScore: armResult.score, audioScore: 0,
+//           totalScore: (faceResult?.score ?? 0) * 0.35 + armResult.score * 0.35,
+//           risk: "bajo",
+//           message: "Sin debilidad en brazo. Puedes continuar como precaución."
+//         });
+//       }
+//       return;
+//     }
+
+//     // Cámara: botón directo
+//     if (armResult.score < 0.25) {
+//       showResult({
+//         faceScore: faceResult?.score ?? 0,
+//         armScore: armResult.score, audioScore: 0,
+//         totalScore: (faceResult?.score ?? 0) * 0.35 + armResult.score * 0.35,
+//         risk: "bajo",
+//         message: "Sin debilidad en brazo. Puedes continuar como precaución."
+//       });
+//       setBtn("Analizar audio de todas formas →", stepAudio, "#888");
+//     } else {
+//       setBtn("Analizar audio →", stepAudio);
+//     }
+//   } catch (err) {
+//     setStatus(`❌ Error en brazo: ${(err as Error).message}`);
+//     setBtn("Reintentar brazo", stepArm, "#E8A020");
+//   }
+// }
 async function stepArm() {
   resultEl.style.display = "none";
-  clearBtn();
-  setStatus("💪 Analizando brazo...");
 
-  if (sourceMode === "camera") await delay(1500);
-  else if (fileType === "video") videoFile.pause();
+  // Para archivos, lógica igual que antes (foto/video estático)
+  if (sourceMode === "file") {
+    clearBtn();
+    setStatus("💪 Analizando brazo...");
+    if (fileType === "video") videoFile.pause();
 
-  try {
-    const source = sourceMode === "file" && fileType === "image"
-      ? imgPreview
-      : activeVideo;
-
-    armResult = await runArmPhase(source as any);
-    addPhaseRow("Fase 2 — Brazo", armResult.score, armResult.raw);
-    setStatus("✔ Brazo analizado");
-
-    // Si es archivo: limpia y pide audio
-    if (sourceMode === "file") {
+    try {
+      const source = fileType === "image" ? imgPreview : activeVideo;
+      armResult = await runArmPhase(source as any);
+      addPhaseRow("Fase 2 — Brazo", armResult.score, armResult.raw);
+      setStatus("✔ Brazo analizado");
       configureDropZone("audio");
       setStatus("✔ Brazo analizado. Ahora carga un archivo de AUDIO.");
       if (armResult.score < 0.25) {
@@ -387,28 +433,70 @@ async function stepArm() {
           message: "Sin debilidad en brazo. Puedes continuar como precaución."
         });
       }
-      return;
+    } catch (err) {
+      setStatus(`❌ Error en brazo: ${(err as Error).message}`);
+      setBtn("Reintentar brazo", stepArm, "#E8A020");
     }
-
-    // Cámara: botón directo
-    if (armResult.score < 0.25) {
-      showResult({
-        faceScore: faceResult?.score ?? 0,
-        armScore: armResult.score, audioScore: 0,
-        totalScore: (faceResult?.score ?? 0) * 0.35 + armResult.score * 0.35,
-        risk: "bajo",
-        message: "Sin debilidad en brazo. Puedes continuar como precaución."
-      });
-      setBtn("Analizar audio de todas formas →", stepAudio, "#888");
-    } else {
-      setBtn("Analizar audio →", stepAudio);
-    }
-  } catch (err) {
-    setStatus(`❌ Error en brazo: ${(err as Error).message}`);
-    setBtn("Reintentar brazo", stepArm, "#E8A020");
+    return;
   }
-}
 
+  // ── CÁMARA: test de 5 segundos sostenido ──────────────────
+  // Muestra instrucción y botón para iniciar
+  setStatus("💪 Levanta ambos brazos al frente cuando estés listo.");
+  setBtn("Comenzar test de brazo", async () => {
+    clearBtn();
+
+    // UI de conteo en vivo
+    btnArea.innerHTML = `
+      <div style="text-align:center;padding:0.75rem;border-radius:8px;
+                  background:#f5f5f5;font-size:0.9rem;color:#444">
+        <div id="armStatus" style="margin-bottom:0.4rem">Detectando posición...</div>
+        <div style="font-size:2rem;font-weight:700;color:#1D9E75" id="armTimer">0s</div>
+        <div style="font-size:0.75rem;color:#888;margin-top:0.25rem">
+          Mantén ambos brazos levantados 5 segundos
+        </div>
+      </div>
+    `;
+
+    const armStatusEl = document.getElementById("armStatus")!;
+    const armTimerEl  = document.getElementById("armTimer")!;
+
+    try {
+      armResult = await runArmPhase(
+        activeVideo,
+        (secondsHeld, currentLabel) => {
+          // Callback en tiempo real — actualiza la UI cada 500ms
+          const isOk = !currentLabel.toLowerCase().includes("debilidad");
+          armTimerEl.textContent  = `${secondsHeld}s / 5s`;
+          armTimerEl.style.color  = isOk ? "#1D9E75" : "#D83535";
+          armStatusEl.textContent = isOk
+            ? "✔ Brazos simétricos — mantén la posición"
+            : "⚠ Brazo caído detectado — reiniciando conteo";
+        }
+      );
+
+      addPhaseRow("Fase 2 — Brazo", armResult.score, armResult.raw);
+
+      if (armResult.score < 0.25) {
+        setStatus("✔ Brazos simétricos durante 5 segundos.");
+        showResult({
+          faceScore: faceResult?.score ?? 0,
+          armScore: armResult.score, audioScore: 0,
+          totalScore: (faceResult?.score ?? 0) * 0.35 + armResult.score * 0.35,
+          risk: "bajo",
+          message: "Sin debilidad en brazo. Puedes continuar como precaución."
+        });
+        setBtn("Analizar audio de todas formas →", stepAudio, "#888");
+      } else {
+        setStatus("⚠ No se mantuvieron los brazos simétricos.");
+        setBtn("Analizar audio →", stepAudio);
+      }
+    } catch (err) {
+      setStatus(`❌ Error en brazo: ${(err as Error).message}`);
+      setBtn("Reintentar brazo", stepArm, "#E8A020");
+    }
+  });
+}
 // ── PASO 3: AUDIO ─────────────────────────────────────────────
 async function stepAudio() {
   resultEl.style.display = "none";

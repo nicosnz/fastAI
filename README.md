@@ -47,7 +47,7 @@ http://localhost:5173
 ## 📁 Documentación / Informe
 El informe del proyecto esta en la carpeta: 
 ```bash
-docs/FastDocs.docx
+docs/FastIA.docx
 ```
 ## 🧪 Uso del sistema
 

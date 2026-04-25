@@ -38,9 +38,33 @@ export async function runFacePhase(
   }
 }
 
+// // ── FASE 2: BRAZO ────────────────────────────────────────────
+// export async function runArmPhase(
+//   video: HTMLVideoElement
+// ): Promise<PhaseResult> {
+//   let model: any;
+//   try {
+//     model = await tmPose.load(
+//       `${BASE}/arms/model.json`,
+//       `${BASE}/arms/metadata.json`
+//     );
+//     const { posenetOutput } = await model.estimatePose(video);
+//     const preds: Prediction[] = await model.predict(posenetOutput);
+
+
+//     const abnormal = preds.find(p =>
+//       p.className.toLowerCase().includes("debilidad unilateral")
+//     );
+//     const score = abnormal?.probability ?? 0;
+//     return { score, label: abnormal?.className ?? "Simetria", raw: preds };
+//   } finally {
+//     disposeModel(model);
+//   }
+// }
 // ── FASE 2: BRAZO ────────────────────────────────────────────
 export async function runArmPhase(
-  video: HTMLVideoElement
+  video: HTMLVideoElement,
+  onTick?: (secondsHeld: number, currentLabel: string) => void
 ): Promise<PhaseResult> {
   let model: any;
   try {
@@ -48,20 +72,79 @@ export async function runArmPhase(
       `${BASE}/arms/model.json`,
       `${BASE}/arms/metadata.json`
     );
-    const { posenetOutput } = await model.estimatePose(video);
-    const preds: Prediction[] = await model.predict(posenetOutput);
 
+    const HOLD_REQUIRED = 5;   // segundos que debe mantenerse simétrico
+    const POLL_MS       = 500; // cada cuántos ms se evalúa
 
-    const abnormal = preds.find(p =>
-      p.className.toLowerCase().includes("debilidad unilateral")
-    );
-    const score = abnormal?.probability ?? 0;
-    return { score, label: abnormal?.className ?? "Simetria", raw: preds };
-  } finally {
+    return await new Promise<PhaseResult>((resolve) => {
+      let secondsHeld = 0;
+      let interval: ReturnType<typeof setInterval>;
+
+      const finish = (result: PhaseResult) => {
+        clearInterval(interval);
+        disposeModel(model);
+        resolve(result);
+      };
+
+      interval = setInterval(async () => {
+        try {
+          const { posenetOutput } = await model.estimatePose(video);
+          const preds: Prediction[] = await model.predict(posenetOutput);
+
+          const abnormal = preds.find(p =>
+            p.className.toLowerCase().includes("debilidad unilateral")
+          );
+          const symmetric = preds.find(p =>
+            p.className.toLowerCase().includes("simetri")
+          );
+
+          const isSymmetric =
+            !abnormal || (symmetric && symmetric.probability > (abnormal?.probability ?? 0));
+
+          if (isSymmetric) {
+            secondsHeld += POLL_MS / 1000;
+            onTick?.(Math.floor(secondsHeld), symmetric?.className ?? "Simétrico");
+
+            if (secondsHeld >= HOLD_REQUIRED) {
+              // Mantuvo 5 segundos → realmente simétrico
+              finish({
+                score: abnormal?.probability ?? 0,
+                label: symmetric?.className ?? "Simétrico",
+                raw: preds
+              });
+            }
+          } else {
+            // Cayó el brazo → resetea el contador
+            secondsHeld = 0;
+            onTick?.(0, abnormal?.className ?? "Debilidad unilateral");
+
+            // Si la debilidad es muy alta (>80%), termina de inmediato
+            if ((abnormal?.probability ?? 0) > 0.80) {
+              finish({
+                score: abnormal!.probability,
+                label: abnormal!.className,
+                raw: preds
+              });
+            }
+          }
+        } catch (_) {}
+      }, POLL_MS);
+
+      // Timeout máximo: 15 segundos — si no logra 5seg seguidos, es debilidad
+      setTimeout(() => {
+        finish({
+          score: 0.75,
+          label: "Debilidad unilateral",
+          raw: []
+        });
+      }, 15_000);
+    });
+
+  } catch (err) {
     disposeModel(model);
+    throw err;
   }
 }
-
 
 export async function runAudioPhase(): Promise<PhaseResult> {
   return new Promise(async (resolve) => {
