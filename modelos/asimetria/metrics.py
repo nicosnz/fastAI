@@ -4,6 +4,7 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 
 
+
 def plot_training_history(history):
     """
     Genera gráficas de Loss y Accuracy del entrenamiento.

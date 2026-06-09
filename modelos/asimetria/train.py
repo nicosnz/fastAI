@@ -3,16 +3,13 @@ import tensorflow as tf
 import numpy as np
 from metrics import plot_training_history, print_summary
 import os
-
+import matplotlib.pyplot as plt
 DATASET_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../datasets/asimetria")
 )
 IMG_SIZE = (224, 224)
 BATCH_SIZE = 16
 
-# ─────────────────────────────────────────────
-# 1. DATASET
-# ─────────────────────────────────────────────
 train_ds = tf.keras.utils.image_dataset_from_directory(
     DATASET_PATH,
     validation_split=0.3,
@@ -20,7 +17,24 @@ train_ds = tf.keras.utils.image_dataset_from_directory(
     seed=42,
     image_size=IMG_SIZE,
     batch_size=BATCH_SIZE,
+    class_names=['normal','acv']
 )
+class_names = train_ds.class_names
+print(class_names)  
+print(train_ds.class_names.index('acv'))
+print(train_ds.class_names.index('normal'))
+
+for images, labels in train_ds.take(1):
+    plt.figure(figsize=(10, 10))
+
+    for i in range(9):
+        ax = plt.subplot(3, 3, i + 1)
+
+        plt.imshow(images[i].numpy().astype("uint8"))
+        plt.title(class_names[labels[i]])
+        plt.axis("off")
+
+    plt.show()
 
 temp_ds = tf.keras.utils.image_dataset_from_directory(
     DATASET_PATH,
@@ -29,7 +43,11 @@ temp_ds = tf.keras.utils.image_dataset_from_directory(
     seed=42,
     image_size=IMG_SIZE,
     batch_size=BATCH_SIZE,
+    class_names=['normal','acv']
+
 )
+
+
 
 val_size = int(0.5 * len(temp_ds))
 val_ds   = temp_ds.take(val_size)
@@ -159,4 +177,4 @@ print_summary(history)
 # ─────────────────────────────────────────────
 # 9. GUARDAR
 # ─────────────────────────────────────────────
-model.save("modelo_final.keras")
+model.save("modelo_final_asimetria.keras")
