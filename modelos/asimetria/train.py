@@ -1,113 +1,73 @@
-
-# train.py — Transfer Learning con MobileNetV2
+# train_mlp.py
 import tensorflow as tf
 import numpy as np
+import pandas as pd
+import joblib
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.preprocessing import StandardScaler
+from model import build_model
 from metrics import plot_training_history, print_summary
-import matplotlib.pyplot as plt
-
-import os
-
-DATASET_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../datasets/asimetria")
-)
-IMG_SIZE   = (224, 224)
-BATCH_SIZE = 16
 
 # ─────────────────────────────────────────────
-# 1. DATASET
+# 1. CARGAR DATASET
 # ─────────────────────────────────────────────
-train_ds = tf.keras.utils.image_dataset_from_directory(
-    DATASET_PATH,
-    validation_split=0.3,
-    subset="training",
-    seed=42,
-    image_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_names=['normal','acv']
-)
-class_names = train_ds.class_names
-print(class_names)  
-print(train_ds.class_names.index('acv'))
-print(train_ds.class_names.index('normal'))
+df = pd.read_csv("dataset/features.csv")
 
-for images, labels in train_ds.take(1):
-    plt.figure(figsize=(10, 10))
+FEATURE_COLS = [
+    "labial", "ocular_diff", "ocular_ratio",
+    "cejas", "nasal_dev", "nasal_alas",
+    "ojo_izq", "ojo_der"
+]
 
-    for i in range(9):
-        ax = plt.subplot(3, 3, i + 1)
+X      = df[FEATURE_COLS].values.astype(np.float32)
+y      = df["label"].values.astype(np.float32)
+groups = df["paciente_id"].values
 
-        plt.imshow(images[i].numpy().astype("uint8"))
-        plt.title(class_names[labels[i]])
-        plt.axis("off")
-
-    plt.show()
-temp_ds = tf.keras.utils.image_dataset_from_directory(
-    DATASET_PATH,
-    validation_split=0.3,
-    subset="validation",
-    seed=42,
-    image_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_names=['normal','acv']
-
-)
-
-val_size = int(0.5 * len(temp_ds))
-val_ds   = temp_ds.take(val_size)
-test_ds  = temp_ds.skip(val_size)
-
-AUTOTUNE = tf.data.AUTOTUNE
-train_ds = train_ds.prefetch(AUTOTUNE)
-val_ds   = val_ds.prefetch(AUTOTUNE)
-test_ds  = test_ds.prefetch(AUTOTUNE)
+print(f"Total muestras : {len(X)}")
+print(f"ACV            : {int(y.sum())}")
+print(f"Normal         : {int((1 - y).sum())}")
+print(f"Pacientes únicos: {len(np.unique(groups))}")
 
 # ─────────────────────────────────────────────
-# 2. DATA AUGMENTATION
+# 2. SPLIT POR PACIENTE
 # ─────────────────────────────────────────────
-# ⚠️ Sin RandomFlip horizontal — corrompe labels de asimetría
-data_augmentation = tf.keras.Sequential([
-    tf.keras.layers.RandomRotation(0.06),
-    tf.keras.layers.RandomZoom(0.08),
-    tf.keras.layers.RandomTranslation(0.05, 0.05),
-    tf.keras.layers.RandomBrightness(0.1),
-    tf.keras.layers.RandomContrast(0.08),
-], name="augmentation")
+# GroupShuffleSplit garantiza que todas las fotos
+# de un paciente queden en el mismo split.
+# Así evitamos el data leakage que teníamos con MobileNetV2.
+gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+train_idx, test_idx = next(gss.split(X, y, groups))
+
+X_train, X_test = X[train_idx], X[test_idx]
+y_train, y_test = y[train_idx], y[test_idx]
 
 # ─────────────────────────────────────────────
-# 3. MODELO — MobileNetV2 + Transfer Learning
+# 3. NORMALIZACIÓN
 # ─────────────────────────────────────────────
-# MobileNetV2 preentrenado en ImageNet (1.4M imágenes, 1000 clases)
-# include_top=False → descartamos su clasificador final
-# Congelamos sus pesos — solo entrenamos nuestro clasificador
-base_model = tf.keras.applications.MobileNetV2(
-    input_shape=(224, 224, 3),
-    include_top=False,
-    weights='imagenet'
-)
-base_model.trainable = False   # FASE 1: base congelada
+# Las métricas ya están normalizadas por distancia interocular
+# pero tienen escalas distintas entre sí (labial ~0.24, cejas ~0.015).
+# StandardScaler lleva cada feature a media=0, std=1.
+# IMPORTANTE: fit solo sobre train, transform sobre ambos.
+scaler  = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test  = scaler.transform(X_test)
 
-# MobileNetV2 espera inputs en [-1, 1], no [0, 1]
-preprocess = tf.keras.applications.mobilenet_v2.preprocess_input
+# ─────────────────────────────────────────────
+# 4. CLASS WEIGHT
+# ─────────────────────────────────────────────
+n_normal = int((y_train == 0).sum())
+n_acv    = int((y_train == 1).sum())
+total    = len(y_train)
+class_weight = {
+    0: total / (2 * n_normal),
+    1: total / (2 * n_acv),
+}
+print(f"\nClass weights → Normal: {class_weight[0]:.2f} | ACV: {class_weight[1]:.2f}")
 
-inputs = tf.keras.Input(shape=(224, 224, 3))
-x = data_augmentation(inputs)
-x = preprocess(x)                              # [-1, 1]
-x = base_model(x, training=False)             # training=False → BatchNorm en modo inferencia
-x = tf.keras.layers.GlobalAveragePooling2D()(x)
-x = tf.keras.layers.Dense(
-        128, activation='relu',
-        kernel_regularizer=tf.keras.regularizers.l2(1e-4)
-    )(x)
-x = tf.keras.layers.Dropout(0.5)(x)
-outputs = tf.keras.layers.Dense(1, activation='sigmoid')(x)
-
-model = tf.keras.Model(inputs, outputs, name="mobilenetv2_asimetria")
+# ─────────────────────────────────────────────
+# 5. MODELO
+# ─────────────────────────────────────────────
+model = build_model(input_dim=len(FEATURE_COLS))
 model.summary()
-
-# ─────────────────────────────────────────────
-# 4. FASE 1 — Solo entrenar el clasificador
-# ─────────────────────────────────────────────
-# class_weight = {0: 1.0, 1: 2.5}
 
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
@@ -115,103 +75,69 @@ model.compile(
     metrics=[
         'accuracy',
         tf.keras.metrics.AUC(name='auc'),
-        tf.keras.metrics.Precision(name='precision'),
         tf.keras.metrics.Recall(name='recall'),
+        tf.keras.metrics.Precision(name='precision'),
     ]
 )
 
-callbacks_fase1 = [
+# ─────────────────────────────────────────────
+# 6. CALLBACKS
+# ─────────────────────────────────────────────
+callbacks = [
     tf.keras.callbacks.EarlyStopping(
-        monitor='val_auc', patience=8,
-        restore_best_weights=True, mode='max'
+        monitor='val_auc',
+        patience=20,
+        restore_best_weights=True,
+        mode='max',
+        verbose=1
     ),
     tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='val_loss', factor=0.5,
-        patience=4, min_lr=1e-6, verbose=1
+        monitor='val_loss',
+        factor=0.5,
+        patience=10,
+        min_lr=1e-6,
+        verbose=1
     ),
     tf.keras.callbacks.ModelCheckpoint(
-        'mejor_fase1.keras', monitor='val_auc',
-        save_best_only=True, mode='max', verbose=1
+        'mejor_mlp.keras',
+        monitor='val_auc',
+        save_best_only=True,
+        mode='max',
+        verbose=1
     ),
 ]
 
-print("\n── FASE 1: Entrenando solo el clasificador ──")
-history1 = model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=20,
-    callbacks=callbacks_fase1,
-    # class_weight=class_weight,
+# ─────────────────────────────────────────────
+# 7. ENTRENAMIENTO
+# ─────────────────────────────────────────────
+history = model.fit(
+    X_train, y_train,
+    validation_split=0.2,
+    epochs=200,
+    batch_size=16,
+    callbacks=callbacks,
+    class_weight=class_weight,
+    verbose=1
 )
 
 # ─────────────────────────────────────────────
-# 5. FASE 2 — Fine-tuning: descongelar últimas capas
-# ─────────────────────────────────────────────
-# Descongelamos las últimas 30 capas de MobileNetV2
-# Las primeras capas ya detectan bordes/texturas — no necesitan cambiar
-# Las últimas aprenden features de alto nivel — esas sí ajustamos
-base_model.trainable = True
-for layer in base_model.layers[:-30]:
-    layer.trainable = False
-
-# LR mucho más bajo para no destruir los pesos preentrenados
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
-    loss='binary_crossentropy',
-    metrics=[
-        'accuracy',
-        tf.keras.metrics.AUC(name='auc'),
-        tf.keras.metrics.Precision(name='precision'),
-        tf.keras.metrics.Recall(name='recall'),
-    ]
-)
-
-callbacks_fase2 = [
-    tf.keras.callbacks.EarlyStopping(
-        monitor='val_auc', patience=10,
-        restore_best_weights=True, mode='max'
-    ),
-    tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='val_loss', factor=0.5,
-        patience=5, min_lr=1e-7, verbose=1
-    ),
-    tf.keras.callbacks.ModelCheckpoint(
-        'mejor_modelo.keras', monitor='val_auc',
-        save_best_only=True, mode='max', verbose=1
-    ),
-]
-
-print("\n── FASE 2: Fine-tuning últimas 30 capas ──")
-history2 = model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=30,
-    callbacks=callbacks_fase2,
-    # class_weight=class_weight,
-)
-
-# ─────────────────────────────────────────────
-# 6. EVALUACIÓN
+# 8. EVALUACIÓN
 # ─────────────────────────────────────────────
 print("\n── Evaluación en test set ──")
-results = model.evaluate(test_ds)
+results = model.evaluate(X_test, y_test, verbose=0)
 for name, val in zip(model.metrics_names, results):
     print(f"  {name}: {val:.4f}")
 
 # ─────────────────────────────────────────────
-# 7. GRÁFICAS — combinamos ambas fases
+# 9. GRÁFICAS
 # ─────────────────────────────────────────────
-# Concatenamos los historiales de fase 1 y fase 2
-combined_history = type('History', (), {'history': {}})()
-for key in history1.history:
-    combined_history.history[key] = (
-        history1.history[key] + history2.history.get(key, [])
-    )
-
-plot_training_history(combined_history)
-print_summary(combined_history)
+plot_training_history(history)
+print_summary(history)
 
 # ─────────────────────────────────────────────
-# 8. GUARDAR
+# 10. GUARDAR MODELO Y SCALER
 # ─────────────────────────────────────────────
-model.save("modelo_final.keras")
+model.save("modelo_mlp.keras")
+joblib.dump(scaler, "scaler.pkl")
+print("\nModelo guardado en modelo_mlp.keras")
+print("Scaler  guardado en scaler.pkl")
