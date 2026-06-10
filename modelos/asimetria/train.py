@@ -3,7 +3,9 @@ import tensorflow as tf
 import numpy as np
 import pandas as pd
 import joblib
-from sklearn.model_selection import GroupShuffleSplit
+import os
+import random
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from model import build_model
 from metrics import plot_training_history, print_summary
@@ -11,7 +13,15 @@ from metrics import plot_training_history, print_summary
 # ─────────────────────────────────────────────
 # 1. CARGAR DATASET
 # ─────────────────────────────────────────────
-df = pd.read_csv("dataset/features.csv")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH = os.path.abspath(os.path.join(BASE_DIR, "../../datasets/asimetria/features.csv"))
+
+df = pd.read_csv(CSV_PATH)
+
+antes = len(df)
+df = df[df["ocular_ratio"] < 1.5].reset_index(drop=True)
+print(f"Filas eliminadas por outlier: {antes - len(df)}")
+print(f"Filas restantes: {len(df)}")
 
 FEATURE_COLS = [
     "labial", "ocular_diff", "ocular_ratio",
@@ -23,40 +33,72 @@ X      = df[FEATURE_COLS].values.astype(np.float32)
 y      = df["label"].values.astype(np.float32)
 groups = df["paciente_id"].values
 
-print(f"Total muestras : {len(X)}")
-print(f"ACV            : {int(y.sum())}")
-print(f"Normal         : {int((1 - y).sum())}")
+print(f"\nTotal muestras  : {len(X)}")
+print(f"ACV             : {int(y.sum())}")
+print(f"Normal          : {int((1 - y).sum())}")
 print(f"Pacientes únicos: {len(np.unique(groups))}")
 
 # ─────────────────────────────────────────────
-# 2. SPLIT POR PACIENTE
+# 2. SPLIT POR PACIENTE — MANUAL
 # ─────────────────────────────────────────────
-# GroupShuffleSplit garantiza que todas las fotos
-# de un paciente queden en el mismo split.
-# Así evitamos el data leakage que teníamos con MobileNetV2.
-gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-train_idx, test_idx = next(gss.split(X, y, groups))
+pacientes_acv    = sorted([g for g in np.unique(groups) if 'acv' in str(g)])
+pacientes_normal = sorted([g for g in np.unique(groups) if 'acv' not in str(g)])
+
+print(f"\nPacientes ACV   : {len(pacientes_acv)}")
+print(f"Pacientes normal: {len(pacientes_normal)}")
+
+conteo_acv = df[df['label'] == 1].groupby('paciente_id').size()
+top_acv    = conteo_acv.nlargest(2).index.tolist()
+
+random.seed(42)
+n_normal_test = max(1, int(len(pacientes_normal) * 0.15))
+normal_test   = random.sample(pacientes_normal, n_normal_test)
+
+test_pacs  = set(top_acv + normal_test)
+train_pacs = set(g for g in np.unique(groups) if g not in test_pacs)
+
+train_idx = np.where([g in train_pacs for g in groups])[0]
+test_idx  = np.where([g in test_pacs  for g in groups])[0]
 
 X_train, X_test = X[train_idx], X[test_idx]
 y_train, y_test = y[train_idx], y[test_idx]
 
-# ─────────────────────────────────────────────
-# 3. NORMALIZACIÓN
-# ─────────────────────────────────────────────
-# Las métricas ya están normalizadas por distancia interocular
-# pero tienen escalas distintas entre sí (labial ~0.24, cejas ~0.015).
-# StandardScaler lleva cada feature a media=0, std=1.
-# IMPORTANTE: fit solo sobre train, transform sobre ambos.
-scaler  = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test  = scaler.transform(X_test)
+print(f"\nTrain: {len(X_train)} muestras — ACV: {int(y_train.sum())} | Normal: {int((y_train==0).sum())}")
+print(f"Test : {len(X_test)}  muestras — ACV: {int(y_test.sum())}  | Normal: {int((y_test==0).sum())}")
+print(f"\nPacientes ACV en train : {[p for p in pacientes_acv if p in train_pacs]}")
+print(f"Pacientes ACV en test  : {top_acv}")
 
 # ─────────────────────────────────────────────
-# 4. CLASS WEIGHT
+# 3. SPLIT DE VALIDACIÓN — con stratify
 # ─────────────────────────────────────────────
-n_normal = int((y_train == 0).sum())
-n_acv    = int((y_train == 1).sum())
-total    = len(y_train)
+# stratify=y_train garantiza que el 20% de validación
+# tenga la misma proporción de ACV y Normal que train.
+# Así val_auc y val_recall dejan de ser 0.
+X_tr, X_val, y_tr, y_val = train_test_split(
+    X_train, y_train,
+    test_size=0.2,
+    stratify=y_train,
+    random_state=42
+)
+
+print(f"\nTrain efectivo : {len(X_tr)}  — ACV: {int(y_tr.sum())} | Normal: {int((y_tr==0).sum())}")
+print(f"Validación     : {len(X_val)} — ACV: {int(y_val.sum())} | Normal: {int((y_val==0).sum())}")
+
+# ─────────────────────────────────────────────
+# 4. NORMALIZACIÓN
+# ─────────────────────────────────────────────
+# fit SOLO sobre X_tr, transform sobre los tres splits
+scaler = StandardScaler()
+X_tr   = scaler.fit_transform(X_tr)
+X_val  = scaler.transform(X_val)
+X_test = scaler.transform(X_test)
+
+# ─────────────────────────────────────────────
+# 5. CLASS WEIGHT
+# ─────────────────────────────────────────────
+n_normal = int((y_tr == 0).sum())
+n_acv    = int((y_tr == 1).sum())
+total    = len(y_tr)
 class_weight = {
     0: total / (2 * n_normal),
     1: total / (2 * n_acv),
@@ -64,7 +106,7 @@ class_weight = {
 print(f"\nClass weights → Normal: {class_weight[0]:.2f} | ACV: {class_weight[1]:.2f}")
 
 # ─────────────────────────────────────────────
-# 5. MODELO
+# 6. MODELO
 # ─────────────────────────────────────────────
 model = build_model(input_dim=len(FEATURE_COLS))
 model.summary()
@@ -81,7 +123,7 @@ model.compile(
 )
 
 # ─────────────────────────────────────────────
-# 6. CALLBACKS
+# 7. CALLBACKS
 # ─────────────────────────────────────────────
 callbacks = [
     tf.keras.callbacks.EarlyStopping(
@@ -108,11 +150,11 @@ callbacks = [
 ]
 
 # ─────────────────────────────────────────────
-# 7. ENTRENAMIENTO
+# 8. ENTRENAMIENTO
 # ─────────────────────────────────────────────
 history = model.fit(
-    X_train, y_train,
-    validation_split=0.2,
+    X_tr, y_tr,
+    validation_data=(X_val, y_val),  # ← validación estratificada
     epochs=200,
     batch_size=16,
     callbacks=callbacks,
@@ -121,21 +163,29 @@ history = model.fit(
 )
 
 # ─────────────────────────────────────────────
-# 8. EVALUACIÓN
+# 9. EVALUACIÓN
 # ─────────────────────────────────────────────
 print("\n── Evaluación en test set ──")
 results = model.evaluate(X_test, y_test, verbose=0)
 for name, val in zip(model.metrics_names, results):
     print(f"  {name}: {val:.4f}")
 
+print("\n── Predicciones en test set ──")
+preds = model.predict(X_test, verbose=0).flatten()
+for i, (prob, real) in enumerate(zip(preds, y_test)):
+    pred_clase = "ACV"   if prob >= 0.5 else "Normal"
+    real_clase = "ACV"   if real == 1   else "Normal"
+    correcto   = "✓" if pred_clase == real_clase else "✗"
+    print(f"  [{correcto}] Real: {real_clase:<6} | Pred: {pred_clase:<6} | P(ACV): {prob:.4f}")
+
 # ─────────────────────────────────────────────
-# 9. GRÁFICAS
+# 10. GRÁFICAS
 # ─────────────────────────────────────────────
 plot_training_history(history)
 print_summary(history)
 
 # ─────────────────────────────────────────────
-# 10. GUARDAR MODELO Y SCALER
+# 11. GUARDAR
 # ─────────────────────────────────────────────
 model.save("modelo_mlp.keras")
 joblib.dump(scaler, "scaler.pkl")
