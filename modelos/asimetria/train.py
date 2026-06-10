@@ -1,4 +1,3 @@
-# train_mlp.py
 import tensorflow as tf
 import numpy as np
 import pandas as pd
@@ -10,9 +9,6 @@ from sklearn.preprocessing import StandardScaler
 from model import build_model
 from metrics import plot_training_history, print_summary
 
-# ─────────────────────────────────────────────
-# 1. CARGAR DATASET
-# ─────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.abspath(os.path.join(BASE_DIR, "../../datasets/asimetria/features.csv"))
 
@@ -38,9 +34,6 @@ print(f"ACV             : {int(y.sum())}")
 print(f"Normal          : {int((1 - y).sum())}")
 print(f"Pacientes únicos: {len(np.unique(groups))}")
 
-# ─────────────────────────────────────────────
-# 2. SPLIT POR PACIENTE — MANUAL
-# ─────────────────────────────────────────────
 pacientes_acv    = sorted([g for g in np.unique(groups) if 'acv' in str(g)])
 pacientes_normal = sorted([g for g in np.unique(groups) if 'acv' not in str(g)])
 
@@ -68,12 +61,7 @@ print(f"Test : {len(X_test)}  muestras — ACV: {int(y_test.sum())}  | Normal: {
 print(f"\nPacientes ACV en train : {[p for p in pacientes_acv if p in train_pacs]}")
 print(f"Pacientes ACV en test  : {top_acv}")
 
-# ─────────────────────────────────────────────
-# 3. SPLIT DE VALIDACIÓN — con stratify
-# ─────────────────────────────────────────────
-# stratify=y_train garantiza que el 20% de validación
-# tenga la misma proporción de ACV y Normal que train.
-# Así val_auc y val_recall dejan de ser 0.
+
 X_tr, X_val, y_tr, y_val = train_test_split(
     X_train, y_train,
     test_size=0.2,
@@ -84,18 +72,13 @@ X_tr, X_val, y_tr, y_val = train_test_split(
 print(f"\nTrain efectivo : {len(X_tr)}  — ACV: {int(y_tr.sum())} | Normal: {int((y_tr==0).sum())}")
 print(f"Validación     : {len(X_val)} — ACV: {int(y_val.sum())} | Normal: {int((y_val==0).sum())}")
 
-# ─────────────────────────────────────────────
-# 4. NORMALIZACIÓN
-# ─────────────────────────────────────────────
-# fit SOLO sobre X_tr, transform sobre los tres splits
+
 scaler = StandardScaler()
 X_tr   = scaler.fit_transform(X_tr)
 X_val  = scaler.transform(X_val)
 X_test = scaler.transform(X_test)
 
-# ─────────────────────────────────────────────
-# 5. CLASS WEIGHT
-# ─────────────────────────────────────────────
+
 n_normal = int((y_tr == 0).sum())
 n_acv    = int((y_tr == 1).sum())
 total    = len(y_tr)
@@ -105,9 +88,7 @@ class_weight = {
 }
 print(f"\nClass weights → Normal: {class_weight[0]:.2f} | ACV: {class_weight[1]:.2f}")
 
-# ─────────────────────────────────────────────
-# 6. MODELO
-# ─────────────────────────────────────────────
+
 model = build_model(input_dim=len(FEATURE_COLS))
 model.summary()
 
@@ -122,9 +103,7 @@ model.compile(
     ]
 )
 
-# ─────────────────────────────────────────────
-# 7. CALLBACKS
-# ─────────────────────────────────────────────
+
 callbacks = [
     tf.keras.callbacks.EarlyStopping(
         monitor='val_auc',
@@ -149,12 +128,9 @@ callbacks = [
     ),
 ]
 
-# ─────────────────────────────────────────────
-# 8. ENTRENAMIENTO
-# ─────────────────────────────────────────────
 history = model.fit(
     X_tr, y_tr,
-    validation_data=(X_val, y_val),  # ← validación estratificada
+    validation_data=(X_val, y_val),  
     epochs=200,
     batch_size=16,
     callbacks=callbacks,
@@ -162,9 +138,7 @@ history = model.fit(
     verbose=1
 )
 
-# ─────────────────────────────────────────────
-# 9. EVALUACIÓN
-# ─────────────────────────────────────────────
+
 print("\n── Evaluación en test set ──")
 results = model.evaluate(X_test, y_test, verbose=0)
 for name, val in zip(model.metrics_names, results):
@@ -178,15 +152,11 @@ for i, (prob, real) in enumerate(zip(preds, y_test)):
     correcto   = "✓" if pred_clase == real_clase else "✗"
     print(f"  [{correcto}] Real: {real_clase:<6} | Pred: {pred_clase:<6} | P(ACV): {prob:.4f}")
 
-# ─────────────────────────────────────────────
-# 10. GRÁFICAS
-# ─────────────────────────────────────────────
+
 plot_training_history(history)
 print_summary(history)
 
-# ─────────────────────────────────────────────
-# 11. GUARDAR
-# ─────────────────────────────────────────────
+
 model.save("modelo_mlp.keras")
 joblib.dump(scaler, "scaler.pkl")
 print("\nModelo guardado en modelo_mlp.keras")

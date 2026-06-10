@@ -1,4 +1,3 @@
-# generate_dataset.py
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -9,9 +8,7 @@ import random
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# ─────────────────────────────────────────────
-# CONFIGURACIÓN
-# ─────────────────────────────────────────────
+
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 DATASET_PATH = os.path.abspath(os.path.join(BASE_DIR, "../../datasets/asimetria"))
 OUTPUT_CSV   = os.path.abspath(os.path.join(BASE_DIR, "../../datasets/asimetria/features.csv"))
@@ -24,9 +21,7 @@ CLASES = {
 
 EXTENSIONES_VALIDAS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
-# ─────────────────────────────────────────────
-# MODELO MEDIAPIPE
-# ─────────────────────────────────────────────
+
 base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
 options = vision.FaceLandmarkerOptions(
     base_options=base_options,
@@ -36,9 +31,7 @@ options = vision.FaceLandmarkerOptions(
 )
 detector = vision.FaceLandmarker.create_from_options(options)
 
-# ─────────────────────────────────────────────
-# LANDMARKS
-# ─────────────────────────────────────────────
+
 LIPS_LEFT  = 61
 LIPS_RIGHT = 291
 EYE_L_SUP  = 159
@@ -53,27 +46,13 @@ NOSE_TIP   = 1
 NOSE_LEFT  = 129
 NOSE_RIGHT = 358
 
-# ─────────────────────────────────────────────
-# EXTRACCIÓN DE PACIENTE ID
-# ─────────────────────────────────────────────
-def extraer_paciente_id(nombre, clase):
-    """
-    Normal: cada imagen es una persona distinta → ID = nombre completo.
 
-    ACV: varias imágenes del mismo paciente con prefijos de augmentation:
-      cropped10_22_M.S_eyebrow1   → acv_paciente_22
-      noisy_20dB_22_M.S_eyebrow1  → acv_paciente_22
-      rotated10_22_M.S_eyebrow1   → acv_paciente_22
-      rotated-10_22_M.S_eyebrow1  → acv_paciente_22
-      translated10_22_M.S_eyebrow → acv_paciente_22
-      translated-20_22_M.S_eyebrow→ acv_paciente_22
-      22_M.S_eyebrow1              → acv_paciente_22
-    """
+def extraer_paciente_id(nombre, clase):
+   
     if clase == "normal":
         return nombre
 
-    # Busca el primer número que aparece seguido de '_'
-    # después de cualquier prefijo (cropped, noisy, rotated, translated)
+    
     m = re.search(
         r'(?:cropped[^_]*_|noisy_\d+dB_|rotated[^_]*_|translated[^_]*_)?(\d+)_',
         nombre
@@ -82,9 +61,7 @@ def extraer_paciente_id(nombre, clase):
         return f"acv_paciente_{m.group(1)}"
     return nombre
 
-# ─────────────────────────────────────────────
-# FUNCIONES
-# ─────────────────────────────────────────────
+
 def corregir_rotacion(img_rgb, face_pre, umbral=2.0):
     h, w = img_rgb.shape[:2]
     eye_l = np.array([face_pre[EYE_L_EXT].x * w, face_pre[EYE_L_EXT].y * h])
@@ -175,9 +152,7 @@ def extraer_features(img_path):
         eye_open_l_n, eye_open_r_n,
     ]
 
-# ─────────────────────────────────────────────
-# GENERAR CSV
-# ─────────────────────────────────────────────
+
 os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
 
 COLUMNAS = [
@@ -208,7 +183,6 @@ with open(OUTPUT_CSV, "w", newline="") as f:
             if fi.lower().endswith(EXTENSIONES_VALIDAS)
         ])
 
-        # Limitar clase normal para balancear con ACV
         if clase == "normal" and len(archivos) > 1500:
             total_antes = len(archivos)
             random.seed(42)
@@ -221,7 +195,6 @@ with open(OUTPUT_CSV, "w", newline="") as f:
             img_path = os.path.join(carpeta, archivo)
             nombre   = os.path.splitext(archivo)[0]
 
-            # ← CAMBIO PRINCIPAL: usar la nueva función
             paciente_id = extraer_paciente_id(nombre, clase)
 
             features = extraer_features(img_path)
@@ -251,9 +224,7 @@ with open(OUTPUT_CSV, "w", newline="") as f:
             if procesadas % 50 == 0:
                 print(f"  {procesadas} imágenes procesadas...")
 
-# ─────────────────────────────────────────────
-# RESUMEN
-# ─────────────────────────────────────────────
+
 print(f"\n{'─'*40}")
 print(f"CSV generado en : {OUTPUT_CSV}")
 print(f"Procesadas      : {procesadas}")
